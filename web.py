@@ -1,11 +1,7 @@
 from flask import Flask
-import MKQ55596
-import threading
-import asyncio
 import os
-import nest_asyncio
-
-nest_asyncio.apply()  # مهم برای Render
+import threading
+import MKQ55596
 
 app = Flask(__name__)
 
@@ -16,9 +12,11 @@ def home():
 def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
-if __name__ == "__main__":
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.start()
+def run_bot():
+    MKQ55596.run_bot()
 
-    loop = asyncio.get_event_loop()
-    loop.create_task(MKQ55596.run_bot())
+if __name__ == "__main__":
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread.start()
+
+    run_flask()
