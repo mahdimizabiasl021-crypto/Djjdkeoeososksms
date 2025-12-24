@@ -6,8 +6,8 @@ from telegram.ext import (
 )
 import asyncio
 
-TOKEN = "8325553827:AAEhSzQRUHrixbFy4EY1qK0E73pIdgp6b3Q"  # ← اینجا توکن رباتتو بزار
-ADMIN_IDS = {6474515118}     # ← اینجا آیدی عددی خودت
+TOKEN = "8325553827:AAEhSzQRUHrixbFy4EY1qK0E73pIdgp6b3Q"  # ← توکن خودت
+ADMIN_IDS = {6474515118}     # ← آیدی عددی خودت
 
 # ---------- DATABASE ----------
 db = sqlite3.connect("bot.db", check_same_thread=False)
@@ -20,7 +20,6 @@ CREATE TABLE IF NOT EXISTS users (
     is_admin INTEGER
 )
 """)
-
 cur.execute("""
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -32,7 +31,6 @@ CREATE TABLE IF NOT EXISTS messages (
 """)
 db.commit()
 
-
 def save_user(user):
     cur.execute(
         "INSERT OR IGNORE INTO users VALUES (?, ?, ?)",
@@ -40,14 +38,12 @@ def save_user(user):
     )
     db.commit()
 
-
 def save_message(sender, receiver, msg_type):
     cur.execute(
         "INSERT INTO messages (sender_id, receiver_id, msg_type) VALUES (?, ?, ?)",
         (sender, receiver, msg_type)
     )
     db.commit()
-
 
 # ---------- STATES ----------
 user_links = {}
@@ -57,14 +53,12 @@ send_direct_state = set()
 admin_search_state = set()
 admin_broadcast_state = set()
 
-
 # ---------- MENUS ----------
 def main_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📎 دریافت لینک اختصاصی", callback_data="get_link")],
         [InlineKeyboardButton("✉️ ارسال پیام مستقیم", callback_data="send_direct")]
     ])
-
 
 def admin_menu():
     return InlineKeyboardMarkup([
@@ -73,13 +67,11 @@ def admin_menu():
         [InlineKeyboardButton("📢 ارسال پیام به همه", callback_data="admin_broadcast")]
     ])
 
-
 def after_send_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✉️ ارسال دوباره پیام", callback_data="send_again")],
         [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_menu")]
     ])
-
 
 # ---------- START ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -99,7 +91,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text("سلام 👋", reply_markup=main_menu())
-
 
 # ---------- BUTTONS ----------
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -122,7 +113,6 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_links.pop(uid, None)
         await q.message.reply_text("منوی اصلی 👇", reply_markup=main_menu())
 
-    # ---------- ADMIN ----------
     elif q.data == "admin_stats":
         cur.execute("SELECT COUNT(*) FROM users")
         count = cur.fetchone()[0]
@@ -136,7 +126,6 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         admin_broadcast_state.add(uid)
         await q.message.reply_text("پیام همگانی رو بفرست:")
 
-    # ---------- USER MESSAGE CONTROL ----------
     elif q.data.startswith("reply_"):
         target = int(q.data.split("_")[1])
         reply_state[uid] = target
@@ -147,14 +136,12 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         blocked.setdefault(uid, set()).add(target)
         await q.message.reply_text("🚫 کاربر بلاک شد")
 
-
 # ---------- MESSAGE HANDLER ----------
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     uid = user.id
     save_user(user)
 
-    # ---------- ADMIN SEARCH ----------
     if uid in admin_search_state and update.message.text.isdigit():
         admin_search_state.remove(uid)
         target = int(update.message.text)
@@ -172,7 +159,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"📩 {r[3]}\nاز {r[0]} به {r[1]}\nنوع: {r[2]}")
         return
 
-    # ---------- ADMIN BROADCAST ----------
     if uid in admin_broadcast_state:
         admin_broadcast_state.remove(uid)
         cur.execute("SELECT user_id FROM users WHERE is_admin=0")
@@ -189,7 +175,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ پیام همگانی ارسال شد")
         return
 
-    # ---------- OWNER REPLY ----------
     if uid in reply_state:
         target = reply_state.pop(uid)
         await context.bot.copy_message(
@@ -201,7 +186,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ پاسخ ارسال شد", reply_markup=after_send_menu())
         return
 
-    # ---------- USER VIA LINK ----------
     if uid in user_links:
         owner = user_links[uid]
         await context.bot.forward_message(
@@ -223,7 +207,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_links.pop(uid, None)
         await update.message.reply_text("✅ پیام ارسال شد", reply_markup=after_send_menu())
         return
-
 
 # ---------- MAIN ----------
 async def run_bot():
