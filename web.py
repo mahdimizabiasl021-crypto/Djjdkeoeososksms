@@ -20,3 +20,4 @@ if __name__ == "__main__":
     bot_thread.start()
 
     run_flask()
+
