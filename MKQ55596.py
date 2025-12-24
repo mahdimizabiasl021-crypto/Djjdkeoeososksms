@@ -1,251 +1,252 @@
 def run_bot():
-import sqlite3
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler,
-    CallbackQueryHandler, ContextTypes, filters
-)
-
-TOKEN = "8325553827:AAEhSzQRUHrixbFy4EY1qK0E73pIdgp6b3Q"
-ADMIN_IDS = {6474515118}
-
-# ---------- DATABASE ----------
-db = sqlite3.connect("bot.db", check_same_thread=False)
-cur = db.cursor()
-
-cur.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
-    username TEXT,
-    is_admin INTEGER
-)
-""")
-
-cur.execute("""
-CREATE TABLE IF NOT EXISTS messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    sender_id INTEGER,
-    receiver_id INTEGER,
-    msg_type TEXT,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-)
-""")
-db.commit()
-
-
-def save_user(user):
-    cur.execute(
-        "INSERT OR IGNORE INTO users VALUES (?, ?, ?)",
-        (user.id, user.username, int(user.id in ADMIN_IDS))
+    import sqlite3
+    from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram.ext import (
+        ApplicationBuilder, CommandHandler, MessageHandler,
+        CallbackQueryHandler, ContextTypes, filters
     )
+
+    TOKEN = "8325553827:AAEhSzQRUHrixbFy4EY1qK0E73pIdgp6b3Q"
+    ADMIN_IDS = {6474515118}
+
+    # ---------- DATABASE ----------
+    db = sqlite3.connect("bot.db", check_same_thread=False)
+    cur = db.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY,
+        username TEXT,
+        is_admin INTEGER
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sender_id INTEGER,
+        receiver_id INTEGER,
+        msg_type TEXT,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
     db.commit()
 
 
-def save_message(sender, receiver, msg_type):
-    cur.execute(
-        "INSERT INTO messages (sender_id, receiver_id, msg_type) VALUES (?, ?, ?)",
-        (sender, receiver, msg_type)
-    )
-    db.commit()
+    def save_user(user):
+        cur.execute(
+            "INSERT OR IGNORE INTO users VALUES (?, ?, ?)",
+            (user.id, user.username, int(user.id in ADMIN_IDS))
+        )
+        db.commit()
 
 
-# ---------- STATES ----------
-user_links = {}
-reply_state = {}
-blocked = {}
-send_direct_state = set()
-
-admin_search_state = set()
-admin_broadcast_state = set()
+    def save_message(sender, receiver, msg_type):
+        cur.execute(
+            "INSERT INTO messages (sender_id, receiver_id, msg_type) VALUES (?, ?, ?)",
+            (sender, receiver, msg_type)
+        )
+        db.commit()
 
 
-# ---------- MENUS ----------
-def main_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📎 دریافت لینک اختصاصی", callback_data="get_link")],
-        [InlineKeyboardButton("✉️ ارسال پیام مستقیم", callback_data="send_direct")]
-    ])
+    # ---------- STATES ----------
+    user_links = {}
+    reply_state = {}
+    blocked = {}
+    send_direct_state = set()
+
+    admin_search_state = set()
+    admin_broadcast_state = set()
 
 
-def admin_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("👥 آمار کاربران", callback_data="admin_stats")],
-        [InlineKeyboardButton("🔍 مشاهده پیام‌های کاربر", callback_data="admin_search")],
-        [InlineKeyboardButton("📢 ارسال پیام به همه", callback_data="admin_broadcast")]
-    ])
+    # ---------- MENUS ----------
+    def main_menu():
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("📎 دریافت لینک اختصاصی", callback_data="get_link")],
+            [InlineKeyboardButton("✉️ ارسال پیام مستقیم", callback_data="send_direct")]
+        ])
 
 
-def after_send_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✉️ ارسال دوباره پیام", callback_data="send_again")],
-        [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_menu")]
-    ])
+    def admin_menu():
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("👥 آمار کاربران", callback_data="admin_stats")],
+            [InlineKeyboardButton("🔍 مشاهده پیام‌های کاربر", callback_data="admin_search")],
+            [InlineKeyboardButton("📢 ارسال پیام به همه", callback_data="admin_broadcast")]
+        ])
 
 
-# ---------- START ----------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    save_user(user)
-
-    # لینک اختصاصی
-    if context.args:
-        owner_id = int(context.args[0])
-        if owner_id in blocked and user.id in blocked[owner_id]:
-            return
-        user_links[user.id] = owner_id
-        await update.message.reply_text("پیامت رو بفرست ✉️")
-        return
-
-    # پنل ادمین
-    if user.id in ADMIN_IDS:
-        await update.message.reply_text("🛠 پنل مدیریت", reply_markup=admin_menu())
-        return
-
-    # کاربر عادی
-    await update.message.reply_text("سلام 👋", reply_markup=main_menu())
+    def after_send_menu():
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("✉️ ارسال دوباره پیام", callback_data="send_again")],
+            [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_menu")]
+        ])
 
 
-# ---------- BUTTONS ----------
-async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    uid = q.from_user.id
+    # ---------- START ----------
+    async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user = update.effective_user
+        save_user(user)
 
-    if q.data == "get_link":
-        link = f"https://t.me/{context.bot.username}?start={uid}"
-        await q.message.reply_text(link)
-
-    elif q.data == "send_direct":
-        send_direct_state.add(uid)
-        await q.message.reply_text("آیدی عددی مخاطب رو بفرست:")
-
-    elif q.data == "send_again":
-        await q.message.reply_text("پیامت رو بفرست:")
-
-    elif q.data == "back_menu":
-        user_links.pop(uid, None)
-        await q.message.reply_text("منوی اصلی 👇", reply_markup=main_menu())
-
-    # ---------- ADMIN ----------
-    elif q.data == "admin_stats":
-        cur.execute("SELECT COUNT(*) FROM users")
-        count = cur.fetchone()[0]
-        await q.message.reply_text(f"👥 تعداد کاربران: {count}")
-
-    elif q.data == "admin_search":
-        admin_search_state.add(uid)
-        await q.message.reply_text("آیدی عددی کاربر رو بفرست:")
-
-    elif q.data == "admin_broadcast":
-        admin_broadcast_state.add(uid)
-        await q.message.reply_text("پیام همگانی رو بفرست:")
-
-    # ---------- USER MESSAGE CONTROL ----------
-    elif q.data.startswith("reply_"):
-        target = int(q.data.split("_")[1])
-        reply_state[uid] = target
-        await q.message.reply_text("پاسخت رو بفرست:")
-
-    elif q.data.startswith("block_"):
-        target = int(q.data.split("_")[1])
-        blocked.setdefault(uid, set()).add(target)
-        await q.message.reply_text("🚫 کاربر بلاک شد")
-
-
-# ---------- MESSAGE HANDLER ----------
-async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    uid = user.id
-    save_user(user)
-
-    # ---------- ADMIN SEARCH RESULT ----------
-    if uid in admin_search_state and update.message.text.isdigit():
-        admin_search_state.remove(uid)
-        target = int(update.message.text)
-
-        cur.execute("""
-        SELECT sender_id, receiver_id, msg_type, timestamp
-        FROM messages
-        WHERE sender_id=? OR receiver_id=?
-        ORDER BY timestamp DESC
-        """, (target, target))
-
-        rows = cur.fetchall()
-        if not rows:
-            await update.message.reply_text("پیامی ثبت نشده")
+        # لینک اختصاصی
+        if context.args:
+            owner_id = int(context.args[0])
+            if owner_id in blocked and user.id in blocked[owner_id]:
+                return
+            user_links[user.id] = owner_id
+            await update.message.reply_text("پیامت رو بفرست ✉️")
             return
 
-        for r in rows:
-            await update.message.reply_text(
-                f"📩 {r[3]}\nاز {r[0]} به {r[1]}\nنوع: {r[2]}"
-            )
-        return
+        # پنل ادمین
+        if user.id in ADMIN_IDS:
+            await update.message.reply_text("🛠 پنل مدیریت", reply_markup=admin_menu())
+            return
 
-    # ---------- ADMIN BROADCAST ----------
-    if uid in admin_broadcast_state:
-        admin_broadcast_state.remove(uid)
-        cur.execute("SELECT user_id FROM users WHERE is_admin=0")
-        users = cur.fetchall()
+        # کاربر عادی
+        await update.message.reply_text("سلام 👋", reply_markup=main_menu())
 
-        for (u,) in users:
-            try:
-                await context.bot.copy_message(
-                    chat_id=u,
-                    from_chat_id=uid,
-                    message_id=update.message.message_id
+
+    # ---------- BUTTONS ----------
+    async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query
+        await q.answer()
+        uid = q.from_user.id
+
+        if q.data == "get_link":
+            link = f"https://t.me/{context.bot.username}?start={uid}"
+            await q.message.reply_text(link)
+
+        elif q.data == "send_direct":
+            send_direct_state.add(uid)
+            await q.message.reply_text("آیدی عددی مخاطب رو بفرست:")
+
+        elif q.data == "send_again":
+            await q.message.reply_text("پیامت رو بفرست:")
+
+        elif q.data == "back_menu":
+            user_links.pop(uid, None)
+            await q.message.reply_text("منوی اصلی 👇", reply_markup=main_menu())
+
+        # ---------- ADMIN ----------
+        elif q.data == "admin_stats":
+            cur.execute("SELECT COUNT(*) FROM users")
+            count = cur.fetchone()[0]
+            await q.message.reply_text(f"👥 تعداد کاربران: {count}")
+
+        elif q.data == "admin_search":
+            admin_search_state.add(uid)
+            await q.message.reply_text("آیدی عددی کاربر رو بفرست:")
+
+        elif q.data == "admin_broadcast":
+            admin_broadcast_state.add(uid)
+            await q.message.reply_text("پیام همگانی رو بفرست:")
+
+        # ---------- USER MESSAGE CONTROL ----------
+        elif q.data.startswith("reply_"):
+            target = int(q.data.split("_")[1])
+            reply_state[uid] = target
+            await q.message.reply_text("پاسخت رو بفرست:")
+
+        elif q.data.startswith("block_"):
+            target = int(q.data.split("_")[1])
+            blocked.setdefault(uid, set()).add(target)
+            await q.message.reply_text("🚫 کاربر بلاک شد")
+
+
+    # ---------- MESSAGE HANDLER ----------
+    async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user = update.effective_user
+        uid = user.id
+        save_user(user)
+
+        # ---------- ADMIN SEARCH RESULT ----------
+        if uid in admin_search_state and update.message.text.isdigit():
+            admin_search_state.remove(uid)
+            target = int(update.message.text)
+
+            cur.execute("""
+            SELECT sender_id, receiver_id, msg_type, timestamp
+            FROM messages
+            WHERE sender_id=? OR receiver_id=?
+            ORDER BY timestamp DESC
+            """, (target, target))
+
+            rows = cur.fetchall()
+            if not rows:
+                await update.message.reply_text("پیامی ثبت نشده")
+                return
+
+            for r in rows:
+                await update.message.reply_text(
+                    f"📩 {r[3]}\nاز {r[0]} به {r[1]}\nنوع: {r[2]}"
                 )
-            except:
-                pass
+            return
 
-        await update.message.reply_text("✅ پیام همگانی ارسال شد")
-        return
+        # ---------- ADMIN BROADCAST ----------
+        if uid in admin_broadcast_state:
+            admin_broadcast_state.remove(uid)
+            cur.execute("SELECT user_id FROM users WHERE is_admin=0")
+            users = cur.fetchall()
 
-    # ---------- OWNER REPLY ----------
-    if uid in reply_state:
-        target = reply_state.pop(uid)
-        await context.bot.copy_message(
-            chat_id=target,
-            from_chat_id=uid,
-            message_id=update.message.message_id
-        )
-        save_message(uid, target, "reply")
-        await update.message.reply_text("✅ پاسخ ارسال شد", reply_markup=after_send_menu())
-        return
+            for (u,) in users:
+                try:
+                    await context.bot.copy_message(
+                        chat_id=u,
+                        from_chat_id=uid,
+                        message_id=update.message.message_id
+                    )
+                except:
+                    pass
 
-    # ---------- USER VIA LINK ----------
-    if uid in user_links:
-        owner = user_links[uid]
+            await update.message.reply_text("✅ پیام همگانی ارسال شد")
+            return
 
-        await context.bot.forward_message(
-            chat_id=owner,
-            from_chat_id=uid,
-            message_id=update.message.message_id
-        )
+        # ---------- OWNER REPLY ----------
+        if uid in reply_state:
+            target = reply_state.pop(uid)
+            await context.bot.copy_message(
+                chat_id=target,
+                from_chat_id=uid,
+                message_id=update.message.message_id
+            )
+            save_message(uid, target, "reply")
+            await update.message.reply_text("✅ پاسخ ارسال شد", reply_markup=after_send_menu())
+            return
 
-        await context.bot.send_message(
-            chat_id=owner,
-            text=f"👤 فرستنده:\nID: {uid}\nUsername: @{user.username}",
-            reply_markup=InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("✉️ پاسخ", callback_data=f"reply_{uid}"),
-                    InlineKeyboardButton("🚫 بلاک", callback_data=f"block_{uid}")
-                ]
-            ])
-        )
+        # ---------- USER VIA LINK ----------
+        if uid in user_links:
+            owner = user_links[uid]
 
-        save_message(uid, owner, "forward")
+            await context.bot.forward_message(
+                chat_id=owner,
+                from_chat_id=uid,
+                message_id=update.message.message_id
+            )
 
-        user_links.pop(uid, None)  # ✅ قطع ارتباط بعد از ارسال
+            await context.bot.send_message(
+                chat_id=owner,
+                text=f"👤 فرستنده:\nID: {uid}\nUsername: @{user.username}",
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("✉️ پاسخ", callback_data=f"reply_{uid}"),
+                        InlineKeyboardButton("🚫 بلاک", callback_data=f"block_{uid}")
+                    ]
+                ])
+            )
 
-        await update.message.reply_text("✅ پیام ارسال شد", reply_markup=after_send_menu())
-        return
+            save_message(uid, owner, "forward")
+            user_links.pop(uid, None)
+            await update.message.reply_text("✅ پیام ارسال شد", reply_markup=after_send_menu())
+            return
 
 
-# ---------- MAIN ----------
-app = ApplicationBuilder().token(TOKEN).build()
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CallbackQueryHandler(buttons))
-app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, message_handler))
-app.run_polling()
+    # ---------- MAIN ----------
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(buttons))
+    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, message_handler))
+    app.run_polling()
+
+
+# ---- پایین ترین جای فایل ----
 if __name__ == "__main__":
     run_bot()
