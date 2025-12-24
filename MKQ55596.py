@@ -1,3 +1,4 @@
+def run_bot():
 import sqlite3
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -246,3 +247,5 @@ app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(buttons))
 app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, message_handler))
 app.run_polling()
+if __name__ == "__main__":
+    run_bot()
