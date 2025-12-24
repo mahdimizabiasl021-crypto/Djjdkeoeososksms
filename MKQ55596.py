@@ -1,8 +1,10 @@
 import os
 import sqlite3
+import time
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatMemberStatus
+from telegram.error import NetworkError
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -39,6 +41,7 @@ ADMIN_IDS = {6474515118}
 db = sqlite3.connect("bot.db", check_same_thread=False)
 cur = db.cursor()
 
+# users: ذخیره نام و یوزرنیم برای لیست ۱۵ نفر آخر
 cur.execute("""
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
@@ -48,6 +51,7 @@ CREATE TABLE IF NOT EXISTS users (
 )
 """)
 
+# messages: ذخیره محتوا
 cur.execute("""
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,6 +63,7 @@ CREATE TABLE IF NOT EXISTS messages (
 )
 """)
 
+# settings: تنظیمات پنل ادمین
 cur.execute("""
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
@@ -67,7 +72,7 @@ CREATE TABLE IF NOT EXISTS settings (
 """)
 db.commit()
 
-# مهاجرت‌ها (اگر قبلاً ستون‌ها نبود)
+# مهاجرت‌ها (اگر از قبل جدول‌ها با ستون کمتر ساخته شده بودند)
 try:
     cur.execute("ALTER TABLE users ADD COLUMN full_name TEXT")
     db.commit()
@@ -105,7 +110,7 @@ def set_bool_setting(key: str, value: bool):
     set_setting(key, "1" if value else "0")
 
 
-# defaults
+# defaults (یک بار)
 if get_setting("force_join_channel", "") == "":
     set_setting("force_join_channel", "@YOUR_CHANNEL")
 if get_setting("force_join_link", "") == "":
@@ -118,7 +123,6 @@ def save_user(user):
     full_name = (user.full_name or "").strip()
     username = (user.username or "").strip() if user.username else None
 
-    # ✅ اگر کاربر قبلاً بود، اطلاعاتش آپدیت شود
     cur.execute("""
     INSERT INTO users (user_id, username, full_name, is_admin)
     VALUES (?, ?, ?, ?)
@@ -142,7 +146,7 @@ def save_message(sender, receiver, msg_type, content=None):
 user_links = {}
 reply_state = {}
 blocked = {}
-send_direct_state = set()
+send_direct_state = set()  # (همچنان مثل قبل نگه داشته شده)
 admin_search_state = set()
 admin_broadcast_state = set()
 
@@ -171,6 +175,10 @@ def admin_menu():
 def admin_settings_menu():
     enabled = get_bool_setting("force_join_enabled", False)
     status_text = "روشن ✅" if enabled else "خاموش ❌"
+    channel = get_setting("force_join_channel", "@YOUR_CHANNEL")
+    link = get_setting("force_join_link", "https://t.me/YOUR_CHANNEL")
+
+    # فقط برای نمایش سریع
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(f"🔒 جوین اجباری: {status_text}", callback_data="toggle_force_join")],
         [InlineKeyboardButton("📢 تنظیم کانال جوین اجباری", callback_data="set_force_join_channel")],
@@ -241,7 +249,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     save_user(user)
 
-    # اگر با لینک اختصاصی آمد
+    # start with link
     if context.args:
         if not await must_join(update, context):
             return
@@ -269,7 +277,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     uid = q.from_user.id
 
-    # چک جوین برای کاربران عادی
+    # join check for normal users on usage actions
     if uid not in ADMIN_IDS:
         if q.data in ("get_link", "send_direct", "send_again", "back_menu"):
             if not await must_join(update, context):
@@ -382,7 +390,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = user.id
     save_user(user)
 
-    # چک جوین برای کاربران عادی
+    # join check for normal users
     if uid not in ADMIN_IDS:
         if not await must_join(update, context):
             return
@@ -497,11 +505,35 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
-# ---------- MAIN ----------
+# ---------- MAIN (RECONNECT SAFE) ----------
 def run_bot():
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(buttons))
-    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, message_handler))
-    app.run_polling()
+    # ✅ اگر شبکه قطع شد (ReadError/NetworkError)، خودش دوباره وصل می‌شود
+    while True:
+        try:
+            app = (
+                ApplicationBuilder()
+                .token(TOKEN)
+                .connect_timeout(30)
+                .read_timeout(90)
+                .write_timeout(90)
+                .pool_timeout(30)
+                .build()
+            )
 
+            app.add_handler(CommandHandler("start", start))
+            app.add_handler(CallbackQueryHandler(buttons))
+            app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, message_handler))
+
+            app.run_polling(
+                drop_pending_updates=True,
+                close_loop=False,
+                poll_interval=1.0,
+            )
+
+        except NetworkError as e:
+            print("NetworkError, reconnecting...", repr(e))
+            time.sleep(5)
+
+        except Exception as e:
+            print("Unexpected error, restarting bot...", repr(e))
+            time.sleep(5)
