@@ -1,6 +1,5 @@
 import os
 import sqlite3
-import asyncio
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -257,13 +256,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- MAIN ----------
 def run_bot():
-    # ✅ Fix for Python 3.13 + threads: create & set event loop in this thread
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(buttons))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, message_handler))
     app.run_polling()
-
