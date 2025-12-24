@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import asyncio
 
@@ -11,8 +12,11 @@ from telegram.ext import (
     filters,
 )
 
-TOKEN = "8325553827:AAEhSzQRUHrixbFy4EY1qK0E73pIdgp6b3Q"  # توکن خودت (همون قبلی)
-ADMIN_IDS = {6474515118}       # آیدی عددی خودت
+TOKEN = os.environ.get("8325553827:AAEhSzQRUHrixbFy4EY1qK0E73pIdgp6b3Q")  # ✅ از Render ENV
+if not TOKEN:
+    raise ValueError("BOT_TOKEN is not set in environment variables")
+
+ADMIN_IDS = {6474515118}  # آیدی عددی خودت
 
 # ---------- DATABASE ----------
 db = sqlite3.connect("bot.db", check_same_thread=False)
@@ -57,7 +61,7 @@ def save_message(sender, receiver, msg_type):
 user_links = {}
 reply_state = {}
 blocked = {}
-send_direct_state = set()          # (تو کدت هست ولی استفاده نشده — دست نزدم)
+send_direct_state = set()
 admin_search_state = set()
 admin_broadcast_state = set()
 
@@ -234,9 +238,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- MAIN ----------
 def run_bot():
+    # ✅ Fix for Python 3.13 + threads: create an event loop in this thread
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(buttons))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, message_handler))
     app.run_polling()
-
