@@ -6,8 +6,8 @@ from telegram.ext import (
 )
 import asyncio
 
-TOKEN = "YOUR_BOT_TOKEN_HERE"  # ← اینجا توکن رباتتو بزار
-ADMIN_IDS = {YOUR_ADMIN_ID}     # ← اینجا آیدی عددی خودت
+TOKEN = "8325553827:AAEhSzQRUHrixbFy4EY1qK0E73pIdgp6b3Q"  # ← اینجا توکن رباتتو بزار
+ADMIN_IDS = {6474515118}     # ← اینجا آیدی عددی خودت
 
 # ---------- DATABASE ----------
 db = sqlite3.connect("bot.db", check_same_thread=False)
