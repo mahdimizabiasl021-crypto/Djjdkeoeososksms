@@ -1,5 +1,6 @@
 def run_bot():
     import sqlite3
+    import asyncio
     from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
     from telegram.ext import (
         ApplicationBuilder, CommandHandler, MessageHandler,
@@ -32,14 +33,13 @@ def run_bot():
     """)
     db.commit()
 
-
+    # ---------- HELPERS ----------
     def save_user(user):
         cur.execute(
             "INSERT OR IGNORE INTO users VALUES (?, ?, ?)",
             (user.id, user.username, int(user.id in ADMIN_IDS))
         )
         db.commit()
-
 
     def save_message(sender, receiver, msg_type):
         cur.execute(
@@ -48,16 +48,13 @@ def run_bot():
         )
         db.commit()
 
-
     # ---------- STATES ----------
     user_links = {}
     reply_state = {}
     blocked = {}
     send_direct_state = set()
-
     admin_search_state = set()
     admin_broadcast_state = set()
-
 
     # ---------- MENUS ----------
     def main_menu():
@@ -66,7 +63,6 @@ def run_bot():
             [InlineKeyboardButton("✉️ ارسال پیام مستقیم", callback_data="send_direct")]
         ])
 
-
     def admin_menu():
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("👥 آمار کاربران", callback_data="admin_stats")],
@@ -74,20 +70,17 @@ def run_bot():
             [InlineKeyboardButton("📢 ارسال پیام به همه", callback_data="admin_broadcast")]
         ])
 
-
     def after_send_menu():
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("✉️ ارسال دوباره پیام", callback_data="send_again")],
             [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_menu")]
         ])
 
-
     # ---------- START ----------
     async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         save_user(user)
 
-        # لینک اختصاصی
         if context.args:
             owner_id = int(context.args[0])
             if owner_id in blocked and user.id in blocked[owner_id]:
@@ -96,14 +89,11 @@ def run_bot():
             await update.message.reply_text("پیامت رو بفرست ✉️")
             return
 
-        # پنل ادمین
         if user.id in ADMIN_IDS:
             await update.message.reply_text("🛠 پنل مدیریت", reply_markup=admin_menu())
             return
 
-        # کاربر عادی
         await update.message.reply_text("سلام 👋", reply_markup=main_menu())
-
 
     # ---------- BUTTONS ----------
     async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -151,34 +141,28 @@ def run_bot():
             blocked.setdefault(uid, set()).add(target)
             await q.message.reply_text("🚫 کاربر بلاک شد")
 
-
     # ---------- MESSAGE HANDLER ----------
     async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         uid = user.id
         save_user(user)
 
-        # ---------- ADMIN SEARCH RESULT ----------
+        # ---------- ADMIN SEARCH ----------
         if uid in admin_search_state and update.message.text.isdigit():
             admin_search_state.remove(uid)
             target = int(update.message.text)
-
             cur.execute("""
             SELECT sender_id, receiver_id, msg_type, timestamp
             FROM messages
             WHERE sender_id=? OR receiver_id=?
             ORDER BY timestamp DESC
             """, (target, target))
-
             rows = cur.fetchall()
             if not rows:
                 await update.message.reply_text("پیامی ثبت نشده")
                 return
-
             for r in rows:
-                await update.message.reply_text(
-                    f"📩 {r[3]}\nاز {r[0]} به {r[1]}\nنوع: {r[2]}"
-                )
+                await update.message.reply_text(f"📩 {r[3]}\nاز {r[0]} به {r[1]}\nنوع: {r[2]}")
             return
 
         # ---------- ADMIN BROADCAST ----------
@@ -186,7 +170,6 @@ def run_bot():
             admin_broadcast_state.remove(uid)
             cur.execute("SELECT user_id FROM users WHERE is_admin=0")
             users = cur.fetchall()
-
             for (u,) in users:
                 try:
                     await context.bot.copy_message(
@@ -196,7 +179,6 @@ def run_bot():
                     )
                 except:
                     pass
-
             await update.message.reply_text("✅ پیام همگانی ارسال شد")
             return
 
@@ -215,13 +197,11 @@ def run_bot():
         # ---------- USER VIA LINK ----------
         if uid in user_links:
             owner = user_links[uid]
-
             await context.bot.forward_message(
                 chat_id=owner,
                 from_chat_id=uid,
                 message_id=update.message.message_id
             )
-
             await context.bot.send_message(
                 chat_id=owner,
                 text=f"👤 فرستنده:\nID: {uid}\nUsername: @{user.username}",
@@ -232,19 +212,19 @@ def run_bot():
                     ]
                 ])
             )
-
             save_message(uid, owner, "forward")
             user_links.pop(uid, None)
             await update.message.reply_text("✅ پیام ارسال شد", reply_markup=after_send_menu())
             return
-
 
     # ---------- MAIN ----------
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(buttons))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, message_handler))
-    app.run_polling()
+
+    # ✅ اینجا event loop درست می‌کنیم
+    asyncio.run(app.run_polling())
 
 
 # ---- پایین ترین جای فایل ----
