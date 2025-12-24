@@ -77,10 +77,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     save_user(user)
 
+    # 🔹 حالت لینک اختصاصی (اولویت اول)
+    if context.args:
+        try:
+            owner_id = int(context.args[0])
+        except:
+            return
+
+        if owner_id in blocked and user.id in blocked[owner_id]:
+            return
+
+        user_links[user.id] = owner_id
+        send_direct_state.discard(user.id)
+
+        await update.message.reply_text("پیامت رو بفرست ✉️")
+        return
+
+    # 🔹 پنل ادمین
     if user.id in ADMIN_IDS:
         await update.message.reply_text("🛠 پنل مدیریت", reply_markup=main_menu())
         return
 
+    # 🔹 کاربر عادی
     await update.message.reply_text("سلام 👋", reply_markup=main_menu())
 
 
