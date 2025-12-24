@@ -1,13 +1,18 @@
 import sqlite3
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler,
-    CallbackQueryHandler, ContextTypes, filters
-)
 import asyncio
 
-TOKEN = "8325553827:AAEhSzQRUHrixbFy4EY1qK0E73pIdgp6b3Q"  # ← توکن خودت
-ADMIN_IDS = {6474515118}     # ← آیدی عددی خودت
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    filters,
+)
+
+TOKEN = "8325553827:AAEhSzQRUHrixbFy4EY1qK0E73pIdgp6b3Q"  # توکن خودت (همون قبلی)
+ADMIN_IDS = {6474515118}       # آیدی عددی خودت
 
 # ---------- DATABASE ----------
 db = sqlite3.connect("bot.db", check_same_thread=False)
@@ -31,12 +36,14 @@ CREATE TABLE IF NOT EXISTS messages (
 """)
 db.commit()
 
+
 def save_user(user):
     cur.execute(
         "INSERT OR IGNORE INTO users VALUES (?, ?, ?)",
         (user.id, user.username, int(user.id in ADMIN_IDS))
     )
     db.commit()
+
 
 def save_message(sender, receiver, msg_type):
     cur.execute(
@@ -45,13 +52,15 @@ def save_message(sender, receiver, msg_type):
     )
     db.commit()
 
+
 # ---------- STATES ----------
 user_links = {}
 reply_state = {}
 blocked = {}
-send_direct_state = set()
+send_direct_state = set()          # (تو کدت هست ولی استفاده نشده — دست نزدم)
 admin_search_state = set()
 admin_broadcast_state = set()
+
 
 # ---------- MENUS ----------
 def main_menu():
@@ -60,6 +69,7 @@ def main_menu():
         [InlineKeyboardButton("✉️ ارسال پیام مستقیم", callback_data="send_direct")]
     ])
 
+
 def admin_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("👥 آمار کاربران", callback_data="admin_stats")],
@@ -67,11 +77,13 @@ def admin_menu():
         [InlineKeyboardButton("📢 ارسال پیام به همه", callback_data="admin_broadcast")]
     ])
 
+
 def after_send_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✉️ ارسال دوباره پیام", callback_data="send_again")],
         [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_menu")]
     ])
+
 
 # ---------- START ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -91,6 +103,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text("سلام 👋", reply_markup=main_menu())
+
 
 # ---------- BUTTONS ----------
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -136,15 +149,17 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         blocked.setdefault(uid, set()).add(target)
         await q.message.reply_text("🚫 کاربر بلاک شد")
 
+
 # ---------- MESSAGE HANDLER ----------
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     uid = user.id
     save_user(user)
 
-    if uid in admin_search_state and update.message.text.isdigit():
+    if uid in admin_search_state and update.message.text and update.message.text.isdigit():
         admin_search_state.remove(uid)
         target = int(update.message.text)
+
         cur.execute("""
         SELECT sender_id, receiver_id, msg_type, timestamp
         FROM messages
@@ -152,9 +167,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ORDER BY timestamp DESC
         """, (target, target))
         rows = cur.fetchall()
+
         if not rows:
             await update.message.reply_text("پیامی ثبت نشده")
             return
+
         for r in rows:
             await update.message.reply_text(f"📩 {r[3]}\nاز {r[0]} به {r[1]}\nنوع: {r[2]}")
         return
@@ -163,6 +180,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         admin_broadcast_state.remove(uid)
         cur.execute("SELECT user_id FROM users WHERE is_admin=0")
         users = cur.fetchall()
+
         for (u,) in users:
             try:
                 await context.bot.copy_message(
@@ -170,13 +188,15 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     from_chat_id=uid,
                     message_id=update.message.message_id
                 )
-            except:
+            except Exception:
                 pass
+
         await update.message.reply_text("✅ پیام همگانی ارسال شد")
         return
 
     if uid in reply_state:
         target = reply_state.pop(uid)
+
         await context.bot.copy_message(
             chat_id=target,
             from_chat_id=uid,
@@ -188,11 +208,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if uid in user_links:
         owner = user_links[uid]
+
         await context.bot.forward_message(
             chat_id=owner,
             from_chat_id=uid,
             message_id=update.message.message_id
         )
+
         await context.bot.send_message(
             chat_id=owner,
             text=f"👤 فرستنده:\nID: {uid}\nUsername: @{user.username}",
@@ -203,15 +225,18 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]
             ])
         )
+
         save_message(uid, owner, "forward")
         user_links.pop(uid, None)
         await update.message.reply_text("✅ پیام ارسال شد", reply_markup=after_send_menu())
         return
 
+
 # ---------- MAIN ----------
-async def run_bot():
+def run_bot():
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(buttons))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, message_handler))
-    await app.run_polling()
+    app.run_polling()
+
