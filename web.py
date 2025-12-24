@@ -1,9 +1,6 @@
-import os
-import threading
 from flask import Flask
-
-# ایمپورت ربات
 import MKQ55596
+import asyncio
 
 app = Flask(__name__)
 
@@ -12,5 +9,7 @@ def home():
     return "Bot is running"
 
 if __name__ == "__main__":
-    threading.Thread(target=MKQ55596.run_bot).start()
+    loop = asyncio.get_event_loop()
+    # ربات را داخل event loop اصلی اجرا می‌کنیم
+    loop.create_task(MKQ55596.run_bot())
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
