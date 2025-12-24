@@ -12,11 +12,30 @@ from telegram.ext import (
     filters,
 )
 
-TOKEN = os.environ.get("8325553827:AAEhSzQRUHrixbFy4EY1qK0E73pIdgp6b3Q")  # ✅ از Render ENV
-if not TOKEN:
-    raise ValueError("BOT_TOKEN is not set in environment variables")
+# ---------------- TOKEN LOADER ----------------
+def load_token() -> str:
+    # 1) try environment
+    token = os.environ.get("BOT_TOKEN")
+    if token and token.strip():
+        return token.strip()
 
-ADMIN_IDS = {6474515118}  # آیدی عددی خودت
+    # 2) try file Token.txt / token.txt
+    for name in ("Token.txt", "token.txt"):
+        try:
+            with open(name, "r", encoding="utf-8") as f:
+                t = f.read().strip()
+                if t:
+                    return t
+        except FileNotFoundError:
+            pass
+
+    raise ValueError("BOT_TOKEN is not set and Token.txt/token.txt not found or empty")
+
+
+TOKEN = load_token()
+
+# ← آیدی عددی خودت
+ADMIN_IDS = {6474515118}
 
 # ---------- DATABASE ----------
 db = sqlite3.connect("bot.db", check_same_thread=False)
@@ -238,7 +257,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- MAIN ----------
 def run_bot():
-    # ✅ Fix for Python 3.13 + threads: create an event loop in this thread
+    # ✅ Fix for Python 3.13 + threads: create & set event loop in this thread
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
@@ -247,3 +266,4 @@ def run_bot():
     app.add_handler(CallbackQueryHandler(buttons))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, message_handler))
     app.run_polling()
+
