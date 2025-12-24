@@ -12,12 +12,10 @@ def home():
 def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
-def run_bot():
-    MKQ55596.run_bot()
-
 if __name__ == "__main__":
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
+    # ✅ Flask in background thread (Render healthcheck OK)
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
 
-    run_flask()
-
+    # ✅ Bot in MAIN thread (signals OK)
+    MKQ55596.run_bot()
