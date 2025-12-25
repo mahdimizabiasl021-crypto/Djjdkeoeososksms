@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import time
+import traceback
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatMemberStatus
@@ -58,7 +59,7 @@ USING_PG = bool(DATABASE_URL)
 ADMIN_IDS = {6474515118}
 
 # =========================
-#   DATABASE (Postgres if Database.txt else SQLite)
+#   DATABASE (Postgres via psycopg3 + auto reconnect OR SQLite fallback)
 # =========================
 cur = None
 db = None
@@ -66,15 +67,40 @@ db = None
 def now_ts() -> int:
     return int(time.time())
 
-if USING_PG:
-    import psycopg  # psycopg v3
 
-    db = psycopg.connect(DATABASE_URL)
-    db.autocommit = True
-    cur = db.cursor()
+if USING_PG:
+    import psycopg
+    from psycopg import OperationalError
+
+    def db_connect():
+        """(Re)connect to Postgres and recreate cursor."""
+        global db, cur
+        db = psycopg.connect(DATABASE_URL)
+        db.autocommit = True
+        cur = db.cursor()
+
+    db_connect()
 
     def q(sql: str, params=None):
-        cur.execute(sql, params or ())
+        """Execute SQL with 1 retry on lost connection."""
+        global cur
+        try:
+            cur.execute(sql, params or ())
+        except OperationalError as e:
+            msg = str(e).lower()
+            if (
+                "connection is lost" in msg
+                or "closed" in msg
+                or "terminated" in msg
+                or "server closed the connection" in msg
+                or "connection not open" in msg
+            ):
+                # reconnect + retry once
+                db_connect()
+                cur.execute(sql, params or ())
+                return
+            raise
+
 else:
     db = sqlite3.connect("bot.db", check_same_thread=False)
     cur = db.cursor()
@@ -82,6 +108,7 @@ else:
     def q(sql: str, params=None):
         cur.execute(sql, params or ())
         db.commit()
+
 
 # ---------- schema ----------
 q("""
@@ -121,6 +148,7 @@ CREATE TABLE IF NOT EXISTS settings (
 )
 """)
 
+
 # ---------- settings helpers ----------
 def set_setting(key: str, value: str):
     if USING_PG:
@@ -152,7 +180,7 @@ def set_bool_setting(key: str, value: bool):
     set_setting(key, "1" if value else "0")
 
 
-# defaults (اگر نبود بساز)
+# defaults
 if get_setting("force_join_channel", "") == "":
     set_setting("force_join_channel", "@YOUR_CHANNEL")
 if get_setting("force_join_link", "") == "":
@@ -259,15 +287,15 @@ user_links = {}
 reply_state = {}
 blocked = {}
 send_direct_state = set()
+
 admin_search_state = set()
 admin_broadcast_state = set()
-
 admin_set_channel_state = set()
 admin_set_link_state = set()
 
-# ✅ new: admin anonymous send
-admin_anon_target_state = set()     # admin waits target id
-admin_anon_message_state = {}       # admin_id -> target_user_id
+# ✅ admin anonymous send
+admin_anon_target_state = set()
+admin_anon_message_state = {}  # admin_id -> target_user_id
 
 
 # ---------- MENUS ----------
@@ -291,11 +319,10 @@ def admin_settings_menu():
     enabled = get_bool_setting("force_join_enabled", False)
     status_text = "روشن ✅" if enabled else "خاموش ❌"
     ch = get_setting("force_join_channel", "@YOUR_CHANNEL")
-    ln = get_setting("force_join_link", "https://t.me/YOUR_CHANNEL")
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(f"🔒 جوین اجباری: {status_text}", callback_data="toggle_force_join")],
-        [InlineKeyboardButton(f"📢 کانال: {ch}", callback_data="set_force_join_channel")],
-        [InlineKeyboardButton(f"🔗 لینک: ...", callback_data="set_force_join_link")],
+        [InlineKeyboardButton(f"📢 تنظیم کانال (فعلی: {ch})", callback_data="set_force_join_channel")],
+        [InlineKeyboardButton("🔗 تنظیم لینک کانال", callback_data="set_force_join_link")],
         [InlineKeyboardButton("🔙 بازگشت", callback_data="back_admin")],
     ])
 
@@ -311,7 +338,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     save_user(user)
 
-    # لینک اختصاصی
+    # start with link: /start <owner_id>
     if context.args:
         if not await must_join(update, context):
             return
@@ -339,7 +366,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await qy.answer()
     uid = qy.from_user.id
 
-    # join check for normal users
+    # join check for normal users on usage actions
     if uid not in ADMIN_IDS:
         if qy.data in ("get_link", "send_direct", "send_again", "back_menu"):
             if not await must_join(update, context):
@@ -458,7 +485,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await must_join(update, context):
             return
 
-    # admin set join channel/link
+    # admin set channel/link
     if uid in ADMIN_IDS and uid in admin_set_channel_state:
         admin_set_channel_state.remove(uid)
         txt = (update.message.text or "").strip()
@@ -479,7 +506,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ لینک ذخیره شد.", reply_markup=admin_settings_menu())
         return
 
-    # ✅ admin anonymous send flow
+    # admin anonymous send flow
     if uid in ADMIN_IDS and uid in admin_anon_target_state:
         txt = (update.message.text or "").strip()
         if txt.isdigit():
@@ -501,7 +528,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ ارسال نشد (ممکنه کاربر بات رو استاپ کرده باشه).")
         return
 
-    # admin search (show content)
+    # admin search show content
     if uid in admin_search_state and update.message.text and update.message.text.isdigit():
         admin_search_state.remove(uid)
         target = int(update.message.text)
@@ -590,6 +617,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
+# ---------- PTB ERROR HANDLER ----------
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    print("PTB ERROR:", repr(context.error))
+    traceback.print_exc()
+
+
 # ---------- MAIN (RECONNECT SAFE) ----------
 def run_bot():
     while True:
@@ -606,14 +639,10 @@ def run_bot():
             app.add_handler(CommandHandler("start", start))
             app.add_handler(CallbackQueryHandler(buttons))
             app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, message_handler))
+            app.add_error_handler(on_error)
 
-            # drop pending to reduce weird states after restarts
             app.run_polling(drop_pending_updates=True, close_loop=False, poll_interval=1.0)
 
-        except NetworkError as e:
-            print("NetworkError, reconnecting...", repr(e))
-            time.sleep(5)
-
         except Exception as e:
-            print("Unexpected error, restarting bot...", repr(e))
+            print("BOT LOOP CRASH:", repr(e))
             time.sleep(5)
