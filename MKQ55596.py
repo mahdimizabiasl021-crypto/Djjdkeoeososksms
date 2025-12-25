@@ -14,47 +14,52 @@ from telegram.ext import (
     filters,
 )
 
-# ======================
-# TOKEN LOADER
-# ======================
+# ---------------- TOKEN LOADER ----------------
 def load_token() -> str:
-    t = os.environ.get("BOT_TOKEN")
-    if t and t.strip():
-        return t.strip()
+    token = os.environ.get("BOT_TOKEN")
+    if token and token.strip():
+        return token.strip()
+
     for name in ("Token.txt", "token.txt"):
-        if os.path.exists(name):
-            val = open(name, "r", encoding="utf-8").read().strip()
-            if val:
-                return val
-    raise RuntimeError("BOT_TOKEN not found (env or Token.txt)")
+        try:
+            with open(name, "r", encoding="utf-8") as f:
+                t = f.read().strip()
+                if t:
+                    return t
+        except FileNotFoundError:
+            pass
 
-TOKEN = load_token()
+    raise ValueError("BOT_TOKEN is not set and Token.txt/token.txt not found or empty")
 
-# ======================
-# DATABASE_URL LOADER
-# ======================
+
+# ---------------- DATABASE URL LOADER ----------------
 def load_database_url() -> str | None:
-    u = os.environ.get("DATABASE_URL")
-    if u and u.strip():
-        return u.strip()
+    url = os.environ.get("DATABASE_URL")
+    if url and url.strip():
+        return url.strip()
+
     for name in ("Database.txt", "database.txt"):
-        if os.path.exists(name):
-            val = open(name, "r", encoding="utf-8").read().strip()
-            if val:
-                return val
+        try:
+            with open(name, "r", encoding="utf-8") as f:
+                u = f.read().strip()
+                if u:
+                    return u
+        except FileNotFoundError:
+            pass
+
     return None
 
+
+TOKEN = load_token()
 DATABASE_URL = load_database_url()
 USING_PG = bool(DATABASE_URL)
 
-# ======================
-# ADMIN
-# ======================
+# ---------- ADMIN ----------
 ADMIN_IDS = {6474515118}
 
-# ======================
-# DB init
-# ======================
+# =========================
+#   DATABASE (Postgres if Database.txt else SQLite)
+# =========================
 cur = None
 db = None
 
@@ -62,7 +67,7 @@ def now_ts() -> int:
     return int(time.time())
 
 if USING_PG:
-    import psycopg  # psycopg3
+    import psycopg  # psycopg v3
 
     db = psycopg.connect(DATABASE_URL)
     db.autocommit = True
@@ -78,9 +83,7 @@ else:
         cur.execute(sql, params or ())
         db.commit()
 
-# ======================
-# Schema
-# ======================
+# ---------- schema ----------
 q("""
 CREATE TABLE IF NOT EXISTS users (
     user_id BIGINT PRIMARY KEY,
@@ -118,77 +121,76 @@ CREATE TABLE IF NOT EXISTS settings (
 )
 """)
 
-# ======================
-# Settings helpers
-# ======================
-def set_setting(k: str, v: str):
+# ---------- settings helpers ----------
+def set_setting(key: str, value: str):
     if USING_PG:
         q(
             "INSERT INTO settings(key,value) VALUES(%s,%s) "
             "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value",
-            (k, v)
+            (key, value)
         )
     else:
         q(
             "INSERT INTO settings(key,value) VALUES(?,?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (k, v)
+            (key, value)
         )
 
-def get_setting(k: str, default: str = "") -> str:
+def get_setting(key: str, default: str = "") -> str:
     if USING_PG:
-        q("SELECT value FROM settings WHERE key=%s", (k,))
+        q("SELECT value FROM settings WHERE key=%s", (key,))
     else:
-        q("SELECT value FROM settings WHERE key=?", (k,))
-    r = cur.fetchone()
-    return r[0] if r and r[0] is not None else default
+        q("SELECT value FROM settings WHERE key=?", (key,))
+    row = cur.fetchone()
+    return row[0] if row and row[0] is not None else default
 
-def get_bool(k: str, default: bool = False) -> bool:
-    v = get_setting(k, "1" if default else "0")
+def get_bool_setting(key: str, default: bool = False) -> bool:
+    v = get_setting(key, "1" if default else "0")
     return v == "1"
 
-def set_bool(k: str, v: bool):
-    set_setting(k, "1" if v else "0")
+def set_bool_setting(key: str, value: bool):
+    set_setting(key, "1" if value else "0")
 
-# defaults
+
+# defaults (اگر نبود بساز)
 if get_setting("force_join_channel", "") == "":
     set_setting("force_join_channel", "@YOUR_CHANNEL")
 if get_setting("force_join_link", "") == "":
     set_setting("force_join_link", "https://t.me/YOUR_CHANNEL")
 if get_setting("force_join_enabled", "") == "":
-    set_bool("force_join_enabled", False)
+    set_bool_setting("force_join_enabled", False)
 
-# ======================
-# Data helpers
-# ======================
-def save_user(u):
-    username = (u.username or "").strip() if u.username else None
-    full_name = (u.full_name or "").strip()
-    is_admin = int(u.id in ADMIN_IDS)
+
+# ---------- data helpers ----------
+def save_user(user):
+    full_name = (user.full_name or "").strip()
+    username = (user.username or "").strip() if user.username else None
+    is_admin = int(user.id in ADMIN_IDS)
     ts = now_ts()
 
     if USING_PG:
         q("""
-        INSERT INTO users (user_id, username, full_name, is_admin, last_seen)
-        VALUES (%s,%s,%s,%s,%s)
-        ON CONFLICT(user_id) DO UPDATE SET
-          username=EXCLUDED.username,
-          full_name=EXCLUDED.full_name,
-          is_admin=EXCLUDED.is_admin,
-          last_seen=EXCLUDED.last_seen
-        """, (u.id, username, full_name, is_admin, ts))
+            INSERT INTO users (user_id, username, full_name, is_admin, last_seen)
+            VALUES (%s,%s,%s,%s,%s)
+            ON CONFLICT(user_id) DO UPDATE SET
+              username=EXCLUDED.username,
+              full_name=EXCLUDED.full_name,
+              is_admin=EXCLUDED.is_admin,
+              last_seen=EXCLUDED.last_seen
+        """, (user.id, username, full_name, is_admin, ts))
     else:
         q("""
-        INSERT INTO users (user_id, username, full_name, is_admin, last_seen)
-        VALUES (?,?,?,?,?)
-        ON CONFLICT(user_id) DO UPDATE SET
-          username=excluded.username,
-          full_name=excluded.full_name,
-          is_admin=excluded.is_admin,
-          last_seen=excluded.last_seen
-        """, (u.id, username, full_name, is_admin, ts))
+            INSERT INTO users (user_id, username, full_name, is_admin, last_seen)
+            VALUES (?,?,?,?,?)
+            ON CONFLICT(user_id) DO UPDATE SET
+              username=excluded.username,
+              full_name=excluded.full_name,
+              is_admin=excluded.is_admin,
+              last_seen=excluded.last_seen
+        """, (user.id, username, full_name, is_admin, ts))
 
-def save_message(sender, receiver, msg_type, content):
+
+def save_message(sender, receiver, msg_type, content=None):
     ts = now_ts()
     if USING_PG:
         q(
@@ -200,6 +202,7 @@ def save_message(sender, receiver, msg_type, content):
             "INSERT INTO messages (sender_id, receiver_id, msg_type, content, ts) VALUES (?,?,?,?,?)",
             (sender, receiver, msg_type, content, ts)
         )
+
 
 def extract_content(update: Update) -> str:
     m = update.message
@@ -223,77 +226,104 @@ def extract_content(update: Update) -> str:
         return "[sticker]"
     return "[other]"
 
-# ======================
-# Force join
-# ======================
+
+# ---------- FORCE JOIN CHECK ----------
 async def must_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    if update.effective_user.id in ADMIN_IDS:
-        return True
-    if not get_bool("force_join_enabled", False):
+    if update.effective_user and update.effective_user.id in ADMIN_IDS:
         return True
 
-    ch = get_setting("force_join_channel", "@YOUR_CHANNEL")
+    enabled = get_bool_setting("force_join_enabled", False)
+    if not enabled:
+        return True
+
+    channel = get_setting("force_join_channel", "@YOUR_CHANNEL")
     link = get_setting("force_join_link", "https://t.me/YOUR_CHANNEL")
 
     try:
-        member = await context.bot.get_chat_member(ch, update.effective_user.id)
+        member = await context.bot.get_chat_member(channel, update.effective_user.id)
         if member.status in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
             return True
     except Exception:
         pass
 
-    await update.effective_message.reply_text(f"برای استفاده از ربات اول عضو کانال شو:\n{link}")
+    text = f"برای استفاده از ربات اول باید عضو کانال بشی:\n{link}"
+    if update.message:
+        await update.message.reply_text(text)
+    elif update.callback_query:
+        await update.callback_query.message.reply_text(text)
     return False
 
-# ======================
-# States
-# ======================
+
+# ---------- STATES ----------
 user_links = {}
 reply_state = {}
 blocked = {}
+send_direct_state = set()
 admin_search_state = set()
 admin_broadcast_state = set()
+
 admin_set_channel_state = set()
 admin_set_link_state = set()
 
-admin_anon_target_state = set()     # admin enters target id
+# ✅ new: admin anonymous send
+admin_anon_target_state = set()     # admin waits target id
 admin_anon_message_state = {}       # admin_id -> target_user_id
 
-# ======================
-# Menus
-# ======================
+
+# ---------- MENUS ----------
 def main_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📎 دریافت لینک اختصاصی", callback_data="get_link")],
+        [InlineKeyboardButton("✉️ ارسال پیام مستقیم", callback_data="send_direct")]
     ])
 
 def admin_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("👥 آمار کاربران", callback_data="admin_stats")],
         [InlineKeyboardButton("🆕 ۱۵ کاربر آخر", callback_data="admin_latest_users")],
-        [InlineKeyboardButton("🔍 مشاهده پیام‌های کاربر", callback_data="admin_search")],
+        [InlineKeyboardButton("🔍 مشاهده پیام‌های کاربر (با محتوا)", callback_data="admin_search")],
         [InlineKeyboardButton("✉️ پیام ناشناس به کاربر", callback_data="admin_anon_send")],
         [InlineKeyboardButton("📢 ارسال پیام به همه", callback_data="admin_broadcast")],
         [InlineKeyboardButton("⚙️ تنظیمات جوین اجباری", callback_data="admin_settings")],
     ])
 
 def admin_settings_menu():
-    enabled = get_bool("force_join_enabled", False)
-    status = "روشن ✅" if enabled else "خاموش ❌"
+    enabled = get_bool_setting("force_join_enabled", False)
+    status_text = "روشن ✅" if enabled else "خاموش ❌"
+    ch = get_setting("force_join_channel", "@YOUR_CHANNEL")
+    ln = get_setting("force_join_link", "https://t.me/YOUR_CHANNEL")
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"🔒 جوین اجباری: {status}", callback_data="toggle_force_join")],
-        [InlineKeyboardButton("📢 تنظیم کانال", callback_data="set_force_join_channel")],
-        [InlineKeyboardButton("🔗 تنظیم لینک کانال", callback_data="set_force_join_link")],
+        [InlineKeyboardButton(f"🔒 جوین اجباری: {status_text}", callback_data="toggle_force_join")],
+        [InlineKeyboardButton(f"📢 کانال: {ch}", callback_data="set_force_join_channel")],
+        [InlineKeyboardButton(f"🔗 لینک: ...", callback_data="set_force_join_link")],
         [InlineKeyboardButton("🔙 بازگشت", callback_data="back_admin")],
     ])
 
-# ======================
-# Handlers
-# ======================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    save_user(update.effective_user)
+def after_send_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✉️ ارسال دوباره پیام", callback_data="send_again")],
+        [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_menu")]
+    ])
 
-    if update.effective_user.id in ADMIN_IDS:
+
+# ---------- START ----------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    save_user(user)
+
+    # لینک اختصاصی
+    if context.args:
+        if not await must_join(update, context):
+            return
+
+        owner_id = int(context.args[0])
+        if owner_id in blocked and user.id in blocked[owner_id]:
+            return
+        user_links[user.id] = owner_id
+        await update.message.reply_text("پیامت رو بفرست ✉️")
+        return
+
+    if user.id in ADMIN_IDS:
         await update.message.reply_text("🛠 پنل مدیریت", reply_markup=admin_menu())
         return
 
@@ -302,29 +332,45 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("سلام 👋", reply_markup=main_menu())
 
+
+# ---------- BUTTONS ----------
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     qy = update.callback_query
     await qy.answer()
     uid = qy.from_user.id
 
-    if qy.data == "get_link":
-        if uid not in ADMIN_IDS:
+    # join check for normal users
+    if uid not in ADMIN_IDS:
+        if qy.data in ("get_link", "send_direct", "send_again", "back_menu"):
             if not await must_join(update, context):
                 return
+
+    if qy.data == "get_link":
         link = f"https://t.me/{context.bot.username}?start={uid}"
         await qy.message.reply_text(link)
-        return
 
-    # ------- admin actions -------
-    if uid not in ADMIN_IDS:
-        return
+    elif qy.data == "send_direct":
+        send_direct_state.add(uid)
+        await qy.message.reply_text("آیدی عددی مخاطب رو بفرست:")
 
-    if qy.data == "admin_stats":
+    elif qy.data == "send_again":
+        await qy.message.reply_text("پیامت رو بفرست:")
+
+    elif qy.data == "back_menu":
+        user_links.pop(uid, None)
+        await qy.message.reply_text("منوی اصلی 👇", reply_markup=main_menu())
+
+    # -------- ADMIN --------
+    elif qy.data == "admin_stats":
+        if uid not in ADMIN_IDS:
+            return
         q("SELECT COUNT(*) FROM users")
         count = cur.fetchone()[0]
         await qy.message.reply_text(f"👥 تعداد کاربران: {count}")
 
     elif qy.data == "admin_latest_users":
+        if uid not in ADMIN_IDS:
+            return
         if USING_PG:
             q("SELECT user_id, full_name, username FROM users ORDER BY last_seen DESC NULLS LAST LIMIT 15")
         else:
@@ -333,54 +379,87 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not rows:
             await qy.message.reply_text("هنوز کاربری ثبت نشده.")
             return
-        out = []
+        lines = []
         for user_id, full_name, username in rows:
-            out.append(f"👤 {full_name or '-'}\nID: {user_id}\nUsername: @{username}" if username else f"👤 {full_name or '-'}\nID: {user_id}\nUsername: -")
-        await qy.message.reply_text("🆕 ۱۵ کاربر آخر:\n\n" + "\n\n".join(out))
+            name = full_name if full_name else "-"
+            uname = f"@{username}" if username else "-"
+            lines.append(f"👤 {name}\nID: {user_id}\nUsername: {uname}\n")
+        await qy.message.reply_text("🆕 ۱۵ کاربر آخر:\n\n" + "\n".join(lines))
 
     elif qy.data == "admin_search":
+        if uid not in ADMIN_IDS:
+            return
         admin_search_state.add(uid)
         await qy.message.reply_text("آیدی عددی کاربر رو بفرست:")
 
     elif qy.data == "admin_anon_send":
+        if uid not in ADMIN_IDS:
+            return
         admin_anon_target_state.add(uid)
         await qy.message.reply_text("آیدی عددی کاربر رو بفرست:")
 
     elif qy.data == "admin_broadcast":
+        if uid not in ADMIN_IDS:
+            return
         admin_broadcast_state.add(uid)
         await qy.message.reply_text("پیام همگانی رو بفرست:")
 
     elif qy.data == "admin_settings":
-        await qy.message.reply_text("⚙️ تنظیمات", reply_markup=admin_settings_menu())
+        if uid not in ADMIN_IDS:
+            return
+        await qy.message.reply_text("⚙️ تنظیمات جوین اجباری", reply_markup=admin_settings_menu())
 
     elif qy.data == "toggle_force_join":
-        set_bool("force_join_enabled", not get_bool("force_join_enabled", False))
+        if uid not in ADMIN_IDS:
+            return
+        set_bool_setting("force_join_enabled", not get_bool_setting("force_join_enabled", False))
         await qy.message.reply_text("✅ ذخیره شد.", reply_markup=admin_settings_menu())
 
     elif qy.data == "set_force_join_channel":
+        if uid not in ADMIN_IDS:
+            return
         admin_set_channel_state.add(uid)
-        await qy.message.reply_text("یوزرنیم کانال رو بفرست (مثل @mychannel) یا -100... :")
+        await qy.message.reply_text("یوزرنیم کانال رو بفرست (مثل @mychannel) یا -100...:")
 
     elif qy.data == "set_force_join_link":
+        if uid not in ADMIN_IDS:
+            return
         admin_set_link_state.add(uid)
         await qy.message.reply_text("لینک کانال رو بفرست (مثل https://t.me/mychannel):")
 
     elif qy.data == "back_admin":
+        if uid not in ADMIN_IDS:
+            return
         await qy.message.reply_text("🛠 پنل مدیریت", reply_markup=admin_menu())
 
+    elif qy.data.startswith("reply_"):
+        if uid not in ADMIN_IDS:
+            return
+        target = int(qy.data.split("_")[1])
+        reply_state[uid] = target
+        await qy.message.reply_text("پاسخت رو بفرست:")
+
+    elif qy.data.startswith("block_"):
+        if uid not in ADMIN_IDS:
+            return
+        target = int(qy.data.split("_")[1])
+        blocked.setdefault(uid, set()).add(target)
+        await qy.message.reply_text("🚫 کاربر بلاک شد")
+
+
+# ---------- MESSAGE HANDLER ----------
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    u = update.effective_user
-    uid = u.id
-    save_user(u)
+    user = update.effective_user
+    uid = user.id
+    save_user(user)
 
     # join check for normal users
     if uid not in ADMIN_IDS:
         if not await must_join(update, context):
             return
-        return  # فعلاً کاربران عادی منوی خاصی ندارن (رباتت را اگر خواستی می‌چسبونیم به سیستم قبلی)
 
-    # ---------- admin set join channel/link ----------
-    if uid in admin_set_channel_state:
+    # admin set join channel/link
+    if uid in ADMIN_IDS and uid in admin_set_channel_state:
         admin_set_channel_state.remove(uid)
         txt = (update.message.text or "").strip()
         if not txt:
@@ -390,7 +469,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ کانال ذخیره شد.", reply_markup=admin_settings_menu())
         return
 
-    if uid in admin_set_link_state:
+    if uid in ADMIN_IDS and uid in admin_set_link_state:
         admin_set_link_state.remove(uid)
         txt = (update.message.text or "").strip()
         if not txt:
@@ -400,18 +479,18 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ لینک ذخیره شد.", reply_markup=admin_settings_menu())
         return
 
-    # ---------- admin anonymous send flow ----------
-    if uid in admin_anon_target_state:
+    # ✅ admin anonymous send flow
+    if uid in ADMIN_IDS and uid in admin_anon_target_state:
         txt = (update.message.text or "").strip()
-        if not txt.isdigit():
+        if txt.isdigit():
+            admin_anon_target_state.remove(uid)
+            admin_anon_message_state[uid] = int(txt)
+            await update.message.reply_text("متن پیام ناشناس رو بفرست:")
+        else:
             await update.message.reply_text("فقط آیدی عددی بفرست.")
-            return
-        admin_anon_target_state.remove(uid)
-        admin_anon_message_state[uid] = int(txt)
-        await update.message.reply_text("متن پیام ناشناس رو بفرست:")
         return
 
-    if uid in admin_anon_message_state:
+    if uid in ADMIN_IDS and uid in admin_anon_message_state:
         target = admin_anon_message_state.pop(uid)
         msg_text = extract_content(update)
         try:
@@ -422,7 +501,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ ارسال نشد (ممکنه کاربر بات رو استاپ کرده باشه).")
         return
 
-    # ---------- admin search ----------
+    # admin search (show content)
     if uid in admin_search_state and update.message.text and update.message.text.isdigit():
         admin_search_state.remove(uid)
         target = int(update.message.text)
@@ -439,31 +518,79 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "WHERE sender_id=? OR receiver_id=? ORDER BY ts DESC LIMIT 50",
                 (target, target)
             )
+
         rows = cur.fetchall()
         if not rows:
             await update.message.reply_text("پیامی ثبت نشده")
             return
+
         for sender_id, receiver_id, msg_type, content, ts in rows:
             await update.message.reply_text(
-                f"📩 {ts}\nاز {sender_id} به {receiver_id}\nنوع: {msg_type}\nمحتوا: {content or '(بدون متن)'}"
+                f"📩 {ts}\nاز {sender_id} به {receiver_id}\nنوع: {msg_type}\nمحتوا: {content or '(بدون متن/فایل)'}"
             )
         return
 
-    # ---------- admin broadcast ----------
+    # admin broadcast
     if uid in admin_broadcast_state:
         admin_broadcast_state.remove(uid)
-        msg_id = update.message.message_id
 
         q("SELECT user_id FROM users WHERE is_admin=0")
         users = cur.fetchall()
-        for (chat_id,) in users:
+
+        for (u,) in users:
             try:
-                await context.bot.copy_message(chat_id=chat_id, from_chat_id=uid, message_id=msg_id)
+                await context.bot.copy_message(
+                    chat_id=u,
+                    from_chat_id=uid,
+                    message_id=update.message.message_id
+                )
             except Exception:
                 pass
+
         await update.message.reply_text("✅ پیام همگانی ارسال شد")
         return
 
+    # admin reply
+    if uid in reply_state:
+        target = reply_state.pop(uid)
+        await context.bot.copy_message(
+            chat_id=target,
+            from_chat_id=uid,
+            message_id=update.message.message_id
+        )
+        save_message(uid, target, "reply", extract_content(update))
+        await update.message.reply_text("✅ پاسخ ارسال شد", reply_markup=after_send_menu())
+        return
+
+    # user via link -> forward to owner
+    if uid in user_links:
+        owner = user_links[uid]
+
+        await context.bot.forward_message(
+            chat_id=owner,
+            from_chat_id=uid,
+            message_id=update.message.message_id
+        )
+
+        await context.bot.send_message(
+            chat_id=owner,
+            text=f"👤 فرستنده:\nID: {uid}\nUsername: @{user.username}",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✉️ پاسخ", callback_data=f"reply_{uid}"),
+                    InlineKeyboardButton("🚫 بلاک", callback_data=f"block_{uid}")
+                ]
+            ])
+        )
+
+        save_message(uid, owner, "forward", extract_content(update))
+
+        user_links.pop(uid, None)
+        await update.message.reply_text("✅ پیام ارسال شد", reply_markup=after_send_menu())
+        return
+
+
+# ---------- MAIN (RECONNECT SAFE) ----------
 def run_bot():
     while True:
         try:
@@ -479,12 +606,14 @@ def run_bot():
             app.add_handler(CommandHandler("start", start))
             app.add_handler(CallbackQueryHandler(buttons))
             app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, message_handler))
+
+            # drop pending to reduce weird states after restarts
             app.run_polling(drop_pending_updates=True, close_loop=False, poll_interval=1.0)
 
         except NetworkError as e:
             print("NetworkError, reconnecting...", repr(e))
             time.sleep(5)
+
         except Exception as e:
             print("Unexpected error, restarting bot...", repr(e))
             time.sleep(5)
-
