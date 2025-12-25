@@ -1,2 +1,1 @@
-postgresql://postgres:Mahdi1384DbSafe
-@db.fawzpxmiuxuflctfircw.supabase.co:5432/postgres
+postgresql://neondb_owner:npg_ZPLztTCuGB56@ep-broad-mode-a41gdjok-pooler.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require
