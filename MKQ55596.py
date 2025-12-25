@@ -73,7 +73,6 @@ if USING_PG:
     from psycopg import OperationalError
 
     def db_connect():
-        """(Re)connect to Postgres and recreate cursor."""
         global db, cur
         db = psycopg.connect(DATABASE_URL)
         db.autocommit = True
@@ -82,7 +81,6 @@ if USING_PG:
     db_connect()
 
     def q(sql: str, params=None):
-        """Execute SQL with 1 retry on lost connection."""
         global cur
         try:
             cur.execute(sql, params or ())
@@ -95,7 +93,6 @@ if USING_PG:
                 or "server closed the connection" in msg
                 or "connection not open" in msg
             ):
-                # reconnect + retry once
                 db_connect()
                 cur.execute(sql, params or ())
                 return
@@ -282,10 +279,29 @@ async def must_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     return False
 
 
+# ---------- helper: find last owner from DB (for reply/block permissions + send_again) ----------
+def get_last_owner_for_sender(sender_id: int) -> int | None:
+    try:
+        if USING_PG:
+            q(
+                "SELECT receiver_id FROM messages WHERE sender_id=%s AND msg_type=%s ORDER BY ts DESC LIMIT 1",
+                (sender_id, "forward")
+            )
+        else:
+            q(
+                "SELECT receiver_id FROM messages WHERE sender_id=? AND msg_type=? ORDER BY ts DESC LIMIT 1",
+                (sender_id, "forward")
+            )
+        row = cur.fetchone()
+        return int(row[0]) if row else None
+    except Exception:
+        return None
+
+
 # ---------- STATES ----------
-user_links = {}
-reply_state = {}
-blocked = {}
+user_links = {}        # user_id -> owner_id (active link mode)
+reply_state = {}       # replier_id -> target_sender_id
+blocked = {}           # owner_id -> set(user_ids)
 send_direct_state = set()
 
 admin_search_state = set()
@@ -293,9 +309,14 @@ admin_broadcast_state = set()
 admin_set_channel_state = set()
 admin_set_link_state = set()
 
-# ✅ admin anonymous send
+# admin anonymous send
 admin_anon_target_state = set()
 admin_anon_message_state = {}  # admin_id -> target_user_id
+
+# ✅ for fixing send_again + permissions
+last_owner_map = {}              # sender_id -> owner_id (memory quick path)
+last_link_owner_for_user = {}    # user_id -> owner_id (for send_again after link usage)
+last_reply_target_for_owner = {} # owner_id -> target_sender_id (for send_again after reply)
 
 
 # ---------- MENUS ----------
@@ -346,7 +367,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         owner_id = int(context.args[0])
         if owner_id in blocked and user.id in blocked[owner_id]:
             return
+
         user_links[user.id] = owner_id
+        last_link_owner_for_user[user.id] = owner_id
         await update.message.reply_text("پیامت رو بفرست ✉️")
         return
 
@@ -381,7 +404,26 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await qy.message.reply_text("آیدی عددی مخاطب رو بفرست:")
 
     elif qy.data == "send_again":
-        await qy.message.reply_text("پیامت رو بفرست:")
+        # ✅ FIX: actually set state again
+        # If user previously used a link, re-enable link forwarding
+        if uid not in ADMIN_IDS:
+            owner = last_link_owner_for_user.get(uid) or get_last_owner_for_sender(uid)
+            if owner:
+                user_links[uid] = owner
+                last_link_owner_for_user[uid] = owner
+                await qy.message.reply_text("پیامت رو بفرست ✉️")
+            else:
+                await qy.message.reply_text("لینک اختصاصی قبلی پیدا نشد. دوباره از لینک وارد شو.")
+            return
+
+        # For admin/owner: if they recently replied, set reply_state again
+        target = last_reply_target_for_owner.get(uid)
+        if target:
+            reply_state[uid] = target
+            await qy.message.reply_text("پاسخت رو بفرست ✉️")
+        else:
+            await qy.message.reply_text("مخاطب قبلی برای پاسخ پیدا نشد.")
+        return
 
     elif qy.data == "back_menu":
         user_links.pop(uid, None)
@@ -460,17 +502,28 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await qy.message.reply_text("🛠 پنل مدیریت", reply_markup=admin_menu())
 
     elif qy.data.startswith("reply_"):
-        if uid not in ADMIN_IDS:
+        target_sender = int(qy.data.split("_")[1])
+
+        # ✅ FIX: allow admin OR owner who received the message
+        owner_of_sender = last_owner_map.get(target_sender) or get_last_owner_for_sender(target_sender)
+        if uid not in ADMIN_IDS and uid != owner_of_sender:
+            await qy.message.reply_text("⛔️ اجازه نداری.")
             return
-        target = int(qy.data.split("_")[1])
-        reply_state[uid] = target
+
+        reply_state[uid] = target_sender
+        last_reply_target_for_owner[uid] = target_sender
         await qy.message.reply_text("پاسخت رو بفرست:")
 
     elif qy.data.startswith("block_"):
-        if uid not in ADMIN_IDS:
+        target_sender = int(qy.data.split("_")[1])
+
+        # ✅ FIX: allow admin OR owner who received the message
+        owner_of_sender = last_owner_map.get(target_sender) or get_last_owner_for_sender(target_sender)
+        if uid not in ADMIN_IDS and uid != owner_of_sender:
+            await qy.message.reply_text("⛔️ اجازه نداری.")
             return
-        target = int(qy.data.split("_")[1])
-        blocked.setdefault(uid, set()).add(target)
+
+        blocked.setdefault(uid, set()).add(target_sender)
         await qy.message.reply_text("🚫 کاربر بلاک شد")
 
 
@@ -523,7 +576,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.send_message(chat_id=target, text=msg_text)
             save_message(uid, target, "admin_anonymous", msg_text)
-            await update.message.reply_text("✅ پیام ناشناس ارسال شد.")
+            await update.message.reply_text("✅ پیام ناشناس ارسال شد.", reply_markup=after_send_menu())
         except Exception:
             await update.message.reply_text("❌ ارسال نشد (ممکنه کاربر بات رو استاپ کرده باشه).")
         return
@@ -557,41 +610,57 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    # admin broadcast
+    # broadcast
     if uid in admin_broadcast_state:
         admin_broadcast_state.remove(uid)
-
         q("SELECT user_id FROM users WHERE is_admin=0")
         users = cur.fetchall()
-
-        for (u,) in users:
+        for (u2,) in users:
             try:
                 await context.bot.copy_message(
-                    chat_id=u,
+                    chat_id=u2,
                     from_chat_id=uid,
                     message_id=update.message.message_id
                 )
             except Exception:
                 pass
-
         await update.message.reply_text("✅ پیام همگانی ارسال شد")
         return
 
-    # admin reply
+    # reply flow (admin OR owner)
     if uid in reply_state:
-        target = reply_state.pop(uid)
+        target_sender = reply_state.pop(uid)
+        last_reply_target_for_owner[uid] = target_sender
+
         await context.bot.copy_message(
-            chat_id=target,
+            chat_id=target_sender,
             from_chat_id=uid,
             message_id=update.message.message_id
         )
-        save_message(uid, target, "reply", extract_content(update))
+        save_message(uid, target_sender, "reply", extract_content(update))
         await update.message.reply_text("✅ پاسخ ارسال شد", reply_markup=after_send_menu())
+        return
+
+    # send_direct flow (simple)
+    if uid in send_direct_state:
+        if update.message.text and update.message.text.isdigit():
+            target = int(update.message.text)
+            send_direct_state.remove(uid)
+            # store in reply_state-like temporary to send next message
+            reply_state[uid] = target
+            last_reply_target_for_owner[uid] = target
+            await update.message.reply_text("پیامت رو بفرست:")
+        else:
+            await update.message.reply_text("فقط آیدی عددی بفرست.")
         return
 
     # user via link -> forward to owner
     if uid in user_links:
         owner = user_links[uid]
+
+        # blocked check
+        if owner in blocked and uid in blocked[owner]:
+            return
 
         await context.bot.forward_message(
             chat_id=owner,
@@ -612,7 +681,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         save_message(uid, owner, "forward", extract_content(update))
 
+        # ✅ remember mapping for permission + send_again
+        last_owner_map[uid] = owner
+        last_link_owner_for_user[uid] = owner
+
+        # we end this one-shot session (like your original logic)
         user_links.pop(uid, None)
+
         await update.message.reply_text("✅ پیام ارسال شد", reply_markup=after_send_menu())
         return
 
@@ -643,6 +718,9 @@ def run_bot():
 
             app.run_polling(drop_pending_updates=True, close_loop=False, poll_interval=1.0)
 
+        except NetworkError as e:
+            print("NetworkError, reconnecting...", repr(e))
+            time.sleep(5)
         except Exception as e:
             print("BOT LOOP CRASH:", repr(e))
             time.sleep(5)
