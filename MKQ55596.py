@@ -316,7 +316,7 @@ admin_anon_message_state = {}  # admin_id -> target_user_id
 # ✅ for fixing send_again + permissions
 last_owner_map = {}              # sender_id -> owner_id (memory quick path)
 last_link_owner_for_user = {}    # user_id -> owner_id (for send_again after link usage)
-last_reply_target_for_owner = {} # owner_id -> target_sender_id (for send_again after reply)
+last_reply_target_for_owner = {} # owner_id -> target_sender_id (برای سازگاری، اگر جایی لازم شد)
 
 
 # ---------- MENUS ----------
@@ -347,9 +347,22 @@ def admin_settings_menu():
         [InlineKeyboardButton("🔙 بازگشت", callback_data="back_admin")],
     ])
 
-def after_send_menu():
+def after_send_menu(mode: str, target_id: int) -> InlineKeyboardMarkup:
+    """
+    mode:
+      - "user_link": کاربر عادی → دوباره به همون owner لینک ناشناس
+      - "owner_reply": ادمین / owner → دوباره به همون کاربر
+    target_id:
+      - اگر mode == user_link → owner_id
+      - اگر mode == owner_reply → user_id (فرستنده)
+    """
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✉️ ارسال دوباره پیام", callback_data="send_again")],
+        [
+            InlineKeyboardButton(
+                "✉️ ارسال دوباره پیام",
+                callback_data=f"send_again|{mode}|{target_id}"
+            )
+        ],
         [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_menu")]
     ])
 
@@ -391,7 +404,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # join check for normal users on usage actions
     if uid not in ADMIN_IDS:
-        if qy.data in ("get_link", "send_direct", "send_again", "back_menu"):
+        if qy.data in ("get_link", "send_direct", "back_menu") or qy.data.startswith("send_again"):
             if not await must_join(update, context):
                 return
 
@@ -403,26 +416,40 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         send_direct_state.add(uid)
         await qy.message.reply_text("آیدی عددی مخاطب رو بفرست:")
 
-    elif qy.data == "send_again":
-        # ✅ FIX: actually set state again
-        # If user previously used a link, re-enable link forwarding
-        if uid not in ADMIN_IDS:
-            owner = last_link_owner_for_user.get(uid) or get_last_owner_for_sender(uid)
-            if owner:
-                user_links[uid] = owner
-                last_link_owner_for_user[uid] = owner
-                await qy.message.reply_text("پیامت رو بفرست ✉️")
-            else:
-                await qy.message.reply_text("لینک اختصاصی قبلی پیدا نشد. دوباره از لینک وارد شو.")
+    elif qy.data.startswith("send_again|"):
+        # ساختار: send_again|<mode>|<target_id>
+        try:
+            _, mode, target_str = qy.data.split("|", 2)
+            target = int(target_str)
+        except Exception:
+            await qy.message.reply_text("❌ داده دکمه مشکل داره.")
             return
 
-        # For admin/owner: if they recently replied, set reply_state again
-        target = last_reply_target_for_owner.get(uid)
-        if target:
-            reply_state[uid] = target
+        if mode == "user_link":
+            # کاربر می‌خواد دوباره برای همون owner لینک ناشناس پیام بفرسته
+            if uid in ADMIN_IDS:
+                await qy.message.reply_text("این دکمه مخصوص کاربره.")
+                return
+
+            user_links[uid] = target  # target = owner_id
+            last_link_owner_for_user[uid] = target
+            await qy.message.reply_text("پیامت رو بفرست ✉️")
+            return
+
+        if mode == "owner_reply":
+            # ادمین یا owner دوباره می‌خواد به همون کاربر جواب بده
+            owner_of_sender = last_owner_map.get(target) or get_last_owner_for_sender(target)
+            if uid not in ADMIN_IDS and uid != owner_of_sender:
+                await qy.message.reply_text("⛔️ اجازه نداری.")
+                return
+
+            reply_state[uid] = target  # target = sender_id
+            last_reply_target_for_owner[uid] = target
             await qy.message.reply_text("پاسخت رو بفرست ✉️")
-        else:
-            await qy.message.reply_text("مخاطب قبلی برای پاسخ پیدا نشد.")
+            return
+
+        # اگر mode چیز دیگه‌ای بود:
+        await qy.message.reply_text("❌ حالت ناشناخته.")
         return
 
     elif qy.data == "back_menu":
@@ -576,7 +603,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.send_message(chat_id=target, text=msg_text)
             save_message(uid, target, "admin_anonymous", msg_text)
-            await update.message.reply_text("✅ پیام ناشناس ارسال شد.", reply_markup=after_send_menu())
+            await update.message.reply_text(
+                "✅ پیام ناشناس ارسال شد.",
+                reply_markup=after_send_menu("owner_reply", target)
+            )
         except Exception:
             await update.message.reply_text("❌ ارسال نشد (ممکنه کاربر بات رو استاپ کرده باشه).")
         return
@@ -638,7 +668,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             message_id=update.message.message_id
         )
         save_message(uid, target_sender, "reply", extract_content(update))
-        await update.message.reply_text("✅ پاسخ ارسال شد", reply_markup=after_send_menu())
+        await update.message.reply_text(
+            "✅ پاسخ ارسال شد",
+            reply_markup=after_send_menu("owner_reply", target_sender)
+        )
         return
 
     # send_direct flow (simple)
@@ -688,7 +721,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # we end this one-shot session (like your original logic)
         user_links.pop(uid, None)
 
-        await update.message.reply_text("✅ پیام ارسال شد", reply_markup=after_send_menu())
+        await update.message.reply_text(
+            "✅ پیام ارسال شد",
+            reply_markup=after_send_menu("user_link", owner)
+        )
         return
 
 
